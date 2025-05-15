@@ -6,6 +6,7 @@
 #include "app.h"
 #include "camera.h"
 
+#define MAX_N 500
 
 typedef struct Particle {
     vec3 prevPosition;
@@ -67,21 +68,15 @@ int32_t numConstraints;
 Particle *particles;
 DistanceConstraint *constraints;
 ParticleVertex *vertices;
+uint32_t *indices;
 
 void initParticles(const AppState *app) {
     int32_t n = simOpts.numParticles;
     float spacing = (float) simOpts.meshSize / (n - 1.0f);
     gridSize = n;
-    free(particles);
-    free(constraints);
-    free(vertices);
-
     numParticles = (gridSize + 1) * (gridSize + 1);
     particleWidth = gridSize + 1;
     numConstraints = numParticles * 4;
-
-    particles = malloc(sizeof(*particles) * numParticles);
-    constraints = malloc(sizeof(*constraints) * numConstraints);
 
     int32_t constraintIdx = 0;
 
@@ -132,25 +127,8 @@ void initParticles(const AppState *app) {
     particles[lastRow].isFixed = true;
     particles[lastRow + particleWidth - 1].isFixed = true;
 
-    if (vertexBuffer)
-        wgpuBufferRelease(vertexBuffer);
-    if (indexBuffer)
-        wgpuBufferRelease(indexBuffer);
-
-    vertexBuffer = wgpuDeviceCreateBuffer(app->device, &(WGPUBufferDescriptor){
-        .label = "Vertex Buffer",
-        .usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Vertex,
-        .size = numParticles * sizeof(ParticleVertex),
-    });
-    vertices = malloc(sizeof(*vertices) * numParticles);
     int32_t numIndices = gridSize * gridSize * 6;
-    indexBuffer = wgpuDeviceCreateBuffer(app->device, &(WGPUBufferDescriptor){
-        .label = "Index Buffer",
-        .usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Index,
-        .size = numIndices * sizeof(uint32_t),
-    });
 
-    uint32_t *indices = malloc(sizeof(*indices) * numIndices);
     int32_t offset = 0;
     for (int32_t y = 1; y < particleWidth; y++) {
         for (int32_t x = 1; x < particleWidth; x++) {
@@ -172,7 +150,7 @@ void initParticles(const AppState *app) {
     }
 
     wgpuQueueWriteBuffer(queue, indexBuffer, 0, indices, numIndices * sizeof(*indices));
-    free(indices);
+
 }
 
 
@@ -269,6 +247,24 @@ int init(const AppState *app, int argc, const char **argv) {
 
     wgpuShaderModuleRelease(shaderModule);
     wgpuPipelineLayoutRelease(pipelineLayout);
+
+    int32_t maxParticles = MAX_N * MAX_N;
+    particles = malloc(sizeof(*particles) * maxParticles);
+    constraints = malloc(sizeof(*constraints) * maxParticles * 4);
+    vertexBuffer = wgpuDeviceCreateBuffer(app->device, &(WGPUBufferDescriptor){
+        .label = "Vertex Buffer",
+        .usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Vertex,
+        .size = maxParticles * sizeof(ParticleVertex),
+    });
+    vertices = malloc(sizeof(*vertices) * maxParticles);
+    int32_t maxIndices = MAX_N * MAX_N * 6;
+    indexBuffer = wgpuDeviceCreateBuffer(app->device, &(WGPUBufferDescriptor){
+        .label = "Index Buffer",
+        .usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Index,
+        .size = maxIndices * sizeof(uint32_t),
+    });
+
+    indices = malloc(sizeof(*indices) * maxIndices);
     initParticles(app);
 
     return 0;
@@ -284,6 +280,7 @@ void deinit(const AppState *app) {
 
     wgpuQueueRelease(queue);
 
+    free(indices);
     free(vertices);
     free(particles);
     free(constraints);
@@ -354,7 +351,13 @@ void simulateCloth(float dt) {
 }
 
 void render(const AppState *app, float dt) {
-     if (simOpts.simulate) {
+    static bool updateParticles = false;
+    if (updateParticles) {
+        initParticles(app);
+        simOpts.simulate = false;
+        updateParticles = false;
+    }
+    if (simOpts.simulate) {
         simulateCloth(dt);
     }
 
@@ -455,8 +458,7 @@ void render(const AppState *app, float dt) {
     igSliderInt("Num substeps", &simOpts.numSubsteps, 1, 10, "%d", 0);
     igSliderInt("Solver iterations", &simOpts.solverIterations, 1, 10, "%d", 0);
     igSpacing();
-    bool updateParticles = false;
-    updateParticles |= igSliderInt("Cloth N", &simOpts.numParticles, 10, 200, "%d", 0);
+    updateParticles |= igSliderInt("Cloth N", &simOpts.numParticles, 10, MAX_N, "%d", 0);
     updateParticles |= igSliderFloat("Cloth size", &simOpts.meshSize, 10.0f, 200.0f, "%.2f", 0);
     updateParticles |= igSliderFloat("Particle mass", &simOpts.particleMass, 0.1f, 10.0f, "%.2f", 0);
     igSpacing();
@@ -484,10 +486,6 @@ void render(const AppState *app, float dt) {
 
     wgpuCommandEncoderRelease(encoder);
 
-    if (updateParticles) {
-        initParticles(app);
-        simOpts.simulate = false;
-    }
 }
 
 AppConfig appMain() {
