@@ -31,7 +31,8 @@ typedef struct Uniform {
 
 WGPUQueue queue;
 WGPUBindGroup pipelineBindGroup;
-WGPURenderPipeline pipeline;
+WGPURenderPipeline clothPipeline;
+WGPURenderPipeline clothMeshPipeline;
 
 WGPUBuffer uniformBuffer;
 WGPUBuffer vertexBuffer;
@@ -102,8 +103,9 @@ void initParticles(const AppState *app, int32_t n, float spacing) {
 
         }
     }
-    particles[0].isFixed = true;
-    particles[particleWidth - 1].isFixed = true;
+    int32_t lastRow = (gridSize - 1) * particleWidth;
+    particles[lastRow].isFixed = true;
+    particles[lastRow + particleWidth - 1].isFixed = true;
 
     if (vertexBuffer)
         wgpuBufferRelease(vertexBuffer);
@@ -125,8 +127,8 @@ void initParticles(const AppState *app, int32_t n, float spacing) {
 
     uint32_t *indices = malloc(sizeof(*indices) * numIndices);
     int32_t offset = 0;
-    for (int32_t y = 1; y < gridSize; y++) {
-        for (int32_t x = 1; x < gridSize; x++) {
+    for (int32_t y = 1; y < particleWidth; y++) {
+        for (int32_t x = 1; x < particleWidth; x++) {
             const uint32_t topRight = (y - 1) * particleWidth + x;
             const uint32_t topLeft = (y - 1) * particleWidth + x - 1;
             const uint32_t bottomLeft = y * particleWidth + x - 1;
@@ -192,10 +194,10 @@ int init(const AppState *app, int argc, const char **argv) {
     WGPUShaderModule shaderModule = createWGSLShaderModule(app->device, "assets/cloth.wgsl");
 
 
-    pipeline = wgpuDeviceCreateRenderPipeline(app->device, &(WGPURenderPipelineDescriptor){
+    WGPURenderPipelineDescriptor pipelineDesc = {
         .layout = pipelineLayout,
-        // TODO: Able to switchero
         .primitive.topology = WGPUPrimitiveTopology_TriangleList,
+        .primitive.cullMode = WGPUCullMode_None,
         .vertex = (WGPUVertexState) {
             .module = shaderModule,
             .entryPoint = "vs_main",
@@ -235,7 +237,10 @@ int init(const AppState *app, int argc, const char **argv) {
             .mask = ~0u,
             .alphaToCoverageEnabled = false
         },
-    });
+    };
+    clothPipeline = wgpuDeviceCreateRenderPipeline(app->device, &pipelineDesc);
+    pipelineDesc.primitive.topology = WGPUPrimitiveTopology_LineList;
+    clothMeshPipeline = wgpuDeviceCreateRenderPipeline(app->device, &pipelineDesc);
 
     wgpuShaderModuleRelease(shaderModule);
     wgpuPipelineLayoutRelease(pipelineLayout);
@@ -244,7 +249,8 @@ int init(const AppState *app, int argc, const char **argv) {
     return 0;
 }
 void deinit(const AppState *app) {
-    wgpuRenderPipelineRelease(pipeline);
+    wgpuRenderPipelineRelease(clothMeshPipeline);
+    wgpuRenderPipelineRelease(clothPipeline);
     wgpuBindGroupRelease(pipelineBindGroup);
 
     wgpuBufferRelease(uniformBuffer);
@@ -266,7 +272,7 @@ void render(const AppState *app, float dt) {
     }
 #endif
 
-    static OrbitCamera camera = ORBIT_CAMERA_DEFAULT;
+    static Camera camera = CAMERA_DEFAULT;
     ImGuiIO *io = igGetIO();
     bool capturedMouse = io->WantCaptureMouse;
     bool capturedKeyboard = io->WantCaptureKeyboard;
@@ -275,32 +281,27 @@ void render(const AppState *app, float dt) {
     if (!capturedKeyboard) {
         float scl = 10.0f;
         if (inputIsKeyDown(GLFW_KEY_LEFT_SHIFT)) {
-            scl = 250.0f;
+            scl = 25.0f;
         }
-        vec2 moveDelta = {
+        vec3 moveDelta = {
             scl * (-dt * inputIsKeyDown(GLFW_KEY_A) + dt * inputIsKeyDown(GLFW_KEY_D)),
-            scl * (-dt * inputIsKeyDown(GLFW_KEY_S) + dt * inputIsKeyDown(GLFW_KEY_W))
+            scl * (-dt * inputIsKeyDown(GLFW_KEY_LEFT_CONTROL) + dt * inputIsKeyDown(GLFW_KEY_SPACE)),
+            scl * (-dt * inputIsKeyDown(GLFW_KEY_S) + dt * inputIsKeyDown(GLFW_KEY_W)),
         };
-        orbitCameraPan(&camera, moveDelta[0], moveDelta[1]);
+        cameraMove(&camera, moveDelta, 1.0f);
     }
 
     if (!capturedMouse) {
         vec2 mouseDelta;
         inputGetMouseDelta(mouseDelta);
-        glm_vec2_scale(mouseDelta, 10.0f * dt, mouseDelta);
-        if (inputIsButtonDown(GLFW_MOUSE_BUTTON_LEFT)) {
-            orbitCameraPan(&camera, -mouseDelta[0], mouseDelta[1]);
-        }
-        if (inputIsButtonDown(GLFW_MOUSE_BUTTON_RIGHT)) {
-            orbitCameraRotate(&camera, -mouseDelta[0], -mouseDelta[1]);
-        }
+        glm_vec2_scale(mouseDelta, 100.0f * dt, mouseDelta);
 
-        vec2 wheelDelta;
-        inputGetMouseWheelDelta(wheelDelta);
-        orbitCameraZoom(&camera, wheelDelta[1]);
+        if (inputIsButtonDown(GLFW_MOUSE_BUTTON_LEFT)) {
+            cameraRotate(&camera, -mouseDelta[0], mouseDelta[1], true);
+        }
     }
 
-    orbitCameraUpdate(&camera);
+    cameraUpdate(&camera);
 
     WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(app->device, &(WGPUCommandEncoderDescriptor) {
         .nextInChain = NULL,
@@ -327,7 +328,19 @@ void render(const AppState *app, float dt) {
          .timestampWrites = NULL,
      });
 
-    wgpuRenderPassEncoderSetPipeline(renderPass, pipeline);
+    static struct {
+        bool drawMesh;
+        bool simulate;
+        int numParticles;
+        float meshSize;
+    } opts = {
+        .drawMesh = true,
+        .simulate = false,
+        .numParticles = 100,
+        .meshSize = 100.0f,
+    };
+
+    wgpuRenderPassEncoderSetPipeline(renderPass, opts.drawMesh ? clothMeshPipeline : clothPipeline);
     wgpuRenderPassEncoderSetBindGroup(renderPass, 0, pipelineBindGroup, 0, NULL);
     wgpuRenderPassEncoderSetVertexBuffer(renderPass, 0, vertexBuffer, 0, wgpuBufferGetSize(vertexBuffer));
     wgpuRenderPassEncoderSetIndexBuffer(renderPass, indexBuffer, WGPUIndexFormat_Uint32, 0, wgpuBufferGetSize(indexBuffer));
@@ -349,8 +362,17 @@ void render(const AppState *app, float dt) {
 
     wgpuRenderPassEncoderDrawIndexed(renderPass, gridSize * gridSize * 6, 1, 0, 0, 0);
 
-    igBegin("NRG DN03", NULL, 0);
+    igBegin("Cloth Simulation", NULL, 0);
+    if (!opts.simulate) {
+        igText("Enable Simulate to start simulation");
+    }
+    igCheckbox("Simulate", &opts.simulate);
+    igCheckbox("Show mesh", &opts.drawMesh);
+    bool updateParticles = false;
+    updateParticles |= igSliderInt("Cloth N", &opts.numParticles, 10, 200, "%d", 0);
+    updateParticles |= igSliderFloat("Cloth size", &opts.meshSize, 10.0f, 200.0f, "%.2f", 0);
     igEnd();
+
 
     igRender();
     ImGui_ImplWGPU_RenderDrawData(igGetDrawData(), renderPass);
@@ -368,13 +390,18 @@ void render(const AppState *app, float dt) {
     wgpuCommandBufferRelease(command);
 
     wgpuCommandEncoderRelease(encoder);
+
+    if (updateParticles) {
+        initParticles(app, opts.numParticles, opts.meshSize / opts.numParticles);
+        opts.simulate = false;
+    }
 }
 
 AppConfig appMain() {
      return (AppConfig) {
         .width = 1280,
         .height = 720,
-        .title = "NRG_DN03",
+        .title = "Cloth Simulation",
         .init = (AppInitFn) init,
         .deinit = (AppDeInitFn) deinit,
         .render = (AppRenderFn) render,

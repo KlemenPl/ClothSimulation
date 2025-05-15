@@ -7,10 +7,12 @@
 
 #include <cglm/cglm.h>
 
-typedef struct OrbitCamera {
+typedef struct Camera {
     vec3 position;
-    vec3 target;
+    vec3 front;
     vec3 up;
+    vec3 right;
+    vec3 worldUp;
 
     float distance;
     float minDistance;
@@ -21,12 +23,14 @@ typedef struct OrbitCamera {
     mat4 view;
     mat4 proj;
     mat4 viewProj;
-} OrbitCamera;
+} Camera;
 
-static const OrbitCamera ORBIT_CAMERA_DEFAULT = {
+static const Camera CAMERA_DEFAULT = {
     .position = {0.0f, 0.0f, 0.0f},
-    .target = {0.0f, 0.0f, 0.0f},
-    .up = {0.0f, 0.0f, 1.0f},
+    .front = {0.0f, 0.0f, -1.0f},
+    .up = {0.0f, 1.0f, 0.0f},
+    .right = {1.0f, 0.0f, 0.0f},
+    .worldUp = {0.0f, 1.0f, 0.0f},
 
     .distance = 10.0f,
     .minDistance = 1.0f,
@@ -35,59 +39,72 @@ static const OrbitCamera ORBIT_CAMERA_DEFAULT = {
     .pitch = 0.0f,
 };
 
-static void orbitCameraUpdate(OrbitCamera* camera) {
-    camera->pitch = glm_clamp(camera->pitch, glm_rad(0.1f), glm_rad(89.9f));
-    camera->distance = glm_clamp(camera->distance, camera->minDistance, camera->maxDistance);
+static void cameraUpdate(Camera* camera) {
+    vec3 front;
+    front[0] = cosf(glm_rad(camera->yaw)) * cosf(glm_rad(camera->pitch));
+    front[1] = sinf(glm_rad(camera->pitch));
+    front[2] = sinf(glm_rad(camera->yaw)) * cosf(glm_rad(camera->pitch));
 
-    float phi = camera->pitch;
-    float theta = camera->yaw;
+    glm_vec3_normalize_to(front, camera->front);
 
-    float x = camera->distance * sinf(phi) * sinf(theta);
-    float y = camera->distance * sinf(phi) * cosf(theta);
-    float z = camera->distance * cosf(phi);
+    // Re-calculate the right and up vectors
+    glm_vec3_cross(camera->front, camera->worldUp, camera->right);
+    glm_vec3_normalize(camera->right);
 
-    camera->position[0] = camera->target[0] + x;
-    camera->position[1] = camera->target[1] - y;
-    camera->position[2] = camera->target[2] + z;
+    glm_vec3_cross(camera->right, camera->front, camera->up);
+    glm_vec3_normalize(camera->up);
 
+    // Calculate look-at target position
+    vec3 target;
+    glm_vec3_add(camera->position, camera->front, target);
+
+    // Update view matrix
     glm_mat4_identity(camera->view);
+    glm_lookat(camera->position, target, camera->up, camera->view);
+
+    // Update projection matrix
     glm_perspective(glm_rad(45.0f), 16.0f / 9.0f, 0.1f, 10000.0f, camera->proj);
-    glm_lookat(camera->position, camera->target, camera->up, camera->view);
+
+    // Calculate combined view-projection matrix
     glm_mat4_mul(camera->proj, camera->view, camera->viewProj);
 }
 
-static void orbitCameraRotate(OrbitCamera* camera, float deltaYaw, float deltaPitch) {
-    camera->yaw += deltaYaw;
-    camera->pitch += deltaPitch;
+static void cameraMove(Camera* camera, vec3 direction, float delta) {
+    vec3 displacement = GLM_VEC3_ZERO_INIT;
+    vec3 worldDirection = GLM_VEC3_ZERO_INIT;
 
-    while (camera->yaw >= 2.0f * GLM_PI)
-        camera->yaw -= 2.0f * GLM_PI;
-    while (camera->yaw <= -2.0f * GLM_PI)
-        camera->yaw += 2.0f * GLM_PI;
-}
-static void orbitCameraZoom(OrbitCamera* camera, float delta) {
-    camera->distance *= (1.0f - delta * 0.1f);
-}
-static void orbitCameraPan(OrbitCamera* camera, float deltaX, float deltaY) {
-    vec3 right;
-    vec3 forward;
+    if (direction[0] != 0) {  // Right/Left movement
+        vec3 rightScaled;
+        glm_vec3_scale(camera->right, direction[0], rightScaled);
+        glm_vec3_add(worldDirection, rightScaled, worldDirection);
+    }
 
-    vec3 dir;
-    glm_vec3_sub(camera->target, camera->position, dir);
-    glm_vec3_normalize(dir);
+    if (direction[1] != 0) {  // Up/Down movement
+        vec3 upScaled;
+        glm_vec3_scale(camera->up, direction[1], upScaled);
+        glm_vec3_add(worldDirection, upScaled, worldDirection);
+    }
 
-    glm_vec3_cross(dir, camera->up, right);
-    glm_vec3_normalize(right);
+    if (direction[2] != 0) {  // Forward/Backward movement
+        vec3 frontScaled;
+        glm_vec3_scale(camera->front, direction[2], frontScaled);
+        glm_vec3_add(worldDirection, frontScaled, worldDirection);
+    }
 
-    glm_vec3_cross(camera->up, right, forward);
-    glm_vec3_normalize(forward);
-
-    float dstFactor = camera->distance * 0.01f;
-
-    camera->target[0] += (right[0] * deltaX + forward[0] * deltaY) * dstFactor;
-    camera->target[1] += (right[1] * deltaX + forward[1] * deltaY) * dstFactor;
-    camera->target[2] += (right[2] * deltaX + forward[2] * deltaY) * dstFactor;
-
+    glm_vec3_scale(worldDirection, delta, displacement);
+    glm_vec3_add(camera->position, displacement, camera->position);
 }
 
+static void cameraRotate(Camera* camera, float dx, float dy, bool constrainPitch) {
+    camera->yaw += dx;
+    camera->pitch += dy;
+
+    // Constrain the pitch to avoid gimbal lock
+    if (constrainPitch) {
+        if (camera->pitch > 89.0f)
+            camera->pitch = 89.0f;
+        if (camera->pitch < -89.0f)
+            camera->pitch = -89.0f;
+    }
+}
 #endif
