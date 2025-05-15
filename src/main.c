@@ -390,7 +390,7 @@ void render(const AppState *app, float dt) {
     if (!capturedMouse) {
         vec2 mouseDelta;
         inputGetMouseDelta(mouseDelta);
-        glm_vec2_scale(mouseDelta, 100.0f * dt, mouseDelta);
+        glm_vec2_scale(mouseDelta, 0.1f, mouseDelta);
 
         if (inputIsButtonDown(GLFW_MOUSE_BUTTON_LEFT)) {
             cameraRotate(&camera, -mouseDelta[0], mouseDelta[1], true);
