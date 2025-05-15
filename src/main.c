@@ -8,16 +8,18 @@
 
 
 typedef struct Particle {
+    vec3 prevPosition;
     vec3 position;
     vec3 velocity;
     float mass;
+    float invMass;
     bool isFixed;
 } Particle;
 
 typedef struct DistanceConstraint {
     int32_t p1;
     int32_t p2;
-    float restLen;
+    float restLength;
 } DistanceConstraint;
 
 typedef struct ParticleVertex {
@@ -28,6 +30,26 @@ typedef struct ParticleVertex {
 typedef struct Uniform {
     mat4 viewProj;
 } Uniform;
+
+struct {
+    bool drawMesh;
+    bool simulate;
+    int32_t numParticles;
+    float meshSize;
+    float particleMass;
+
+    int32_t numSubsteps;
+    int32_t solverIterations;
+
+} simOpts = {
+    .drawMesh = false,
+    .simulate = false,
+    .numParticles = 100,
+    .meshSize = 50.0f,
+    .particleMass = 1.0f,
+    .numSubsteps = 3,
+    .solverIterations = 3,
+};
 
 WGPUQueue queue;
 WGPUBindGroup pipelineBindGroup;
@@ -46,7 +68,9 @@ Particle *particles;
 DistanceConstraint *constraints;
 ParticleVertex *vertices;
 
-void initParticles(const AppState *app, int32_t n, float spacing) {
+void initParticles(const AppState *app) {
+    int32_t n = simOpts.numParticles;
+    float spacing = (float) simOpts.meshSize / (n - 1.0f);
     gridSize = n;
     free(particles);
     free(constraints);
@@ -67,7 +91,8 @@ void initParticles(const AppState *app, int32_t n, float spacing) {
             particles[idx] = (Particle){
                 .position = {(float) x * spacing, 0, (float) y * spacing},
                 .velocity = {0, 0, 0},
-                .mass = 1.0f,
+                .mass = simOpts.particleMass,
+                .invMass = 1.0f / simOpts.particleMass,
                 .isFixed = false,
             };
 
@@ -75,28 +100,28 @@ void initParticles(const AppState *app, int32_t n, float spacing) {
                 constraints[constraintIdx++] = (DistanceConstraint) {
                     .p1 = idx,
                     .p2 = idx - 1,
-                    .restLen = spacing,
+                    .restLength = spacing,
                 };
             }
             if (x < particleWidth - 1) {
                 constraints[constraintIdx++] = (DistanceConstraint) {
                     .p1 = idx,
                     .p2 = idx + 1,
-                    .restLen = spacing,
+                    .restLength = spacing,
                 };
             }
             if (y > 0) {
                 constraints[constraintIdx++] = (DistanceConstraint) {
                     .p1 = idx,
-                    .p2 = idx - 1,
-                    .restLen = spacing,
+                    .p2 = idx - particleWidth,
+                    .restLength = spacing,
                 };
             }
             if (y < particleWidth - 1) {
                 constraints[constraintIdx++] = (DistanceConstraint) {
                     .p1 = idx,
-                    .p2 = idx + 1,
-                    .restLen = spacing,
+                    .p2 = idx + particleWidth,
+                    .restLength = spacing,
                 };
             }
 
@@ -244,7 +269,7 @@ int init(const AppState *app, int argc, const char **argv) {
 
     wgpuShaderModuleRelease(shaderModule);
     wgpuPipelineLayoutRelease(pipelineLayout);
-    initParticles(app, 100, 1.0f);
+    initParticles(app);
 
     return 0;
 }
@@ -264,7 +289,75 @@ void deinit(const AppState *app) {
     free(constraints);
 }
 
+void solveDistanceConstraint(int32_t cIdx) {
+    DistanceConstraint *constraint = constraints + cIdx;
+
+    Particle *p1 = particles + constraint->p1;
+    Particle *p2 = particles + constraint->p2;
+
+    if (p1->isFixed && p2->isFixed)
+        return;
+
+    vec3 delta;
+    glm_vec3_sub(p1->position, p2->position, delta);
+    float length = glm_vec3_norm(delta);
+    if (length < 1e-5) return;
+
+    float C = length - constraint->restLength;
+    vec3 direction;
+    glm_vec3_divs(delta, length, direction);
+
+    float w1 = p1->isFixed ? 0 : p1->invMass;
+    float w2 = p2->isFixed ? 0 : p2->invMass;
+    float totalWeight = w1 + w2;
+    if (totalWeight < 1e-5) return;
+
+    float correction = C / totalWeight;
+
+    if (!p1->isFixed) {
+        glm_vec3_muladds(direction, -(w1 * correction), p1->position);
+    }
+    if (!p2->isFixed) {
+        glm_vec3_muladds(direction, (w2 * correction), p2->position);
+    }
+}
+void simulateCloth(float dt) {
+    float subDt = dt / simOpts.numSubsteps;
+
+    static vec3 gravity = {0.0f, -9.81f, 0.0f};
+
+    for (int32_t substep = 0; substep < simOpts.numSubsteps; substep++) {
+        for (int32_t i = 0; i < numParticles; i++) {
+            glm_vec3_copy(particles[i].position, particles[i].prevPosition);
+        }
+
+        for (int32_t i = 0; i < numParticles; i++) {
+            if (particles[i].isFixed) continue;
+            glm_vec3_muladds(gravity, subDt, particles[i].velocity);
+            glm_vec3_muladds(particles[i].velocity, subDt, particles[i].position);
+        }
+
+        for (int32_t iter = 0; iter < simOpts.solverIterations; iter++) {
+            for (int32_t i = 0; i < numConstraints; i++) {
+                solveDistanceConstraint(i);
+            }
+        }
+
+        for (int32_t i = 0; i < numParticles; i++) {
+            if (particles[i].isFixed) continue;
+            glm_vec3_sub(particles[i].position, particles[i].prevPosition, particles[i].velocity);
+            glm_vec3_divs(particles[i].velocity, subDt, particles[i].velocity);
+        }
+
+    }
+
+}
+
 void render(const AppState *app, float dt) {
+     if (simOpts.simulate) {
+        simulateCloth(dt);
+    }
+
 #ifndef __EMSCRIPTEN__
     // Cant exit on html
     if (inputIsKeyPressed(GLFW_KEY_ESCAPE)) {
@@ -328,19 +421,7 @@ void render(const AppState *app, float dt) {
          .timestampWrites = NULL,
      });
 
-    static struct {
-        bool drawMesh;
-        bool simulate;
-        int numParticles;
-        float meshSize;
-    } opts = {
-        .drawMesh = true,
-        .simulate = false,
-        .numParticles = 100,
-        .meshSize = 100.0f,
-    };
-
-    wgpuRenderPassEncoderSetPipeline(renderPass, opts.drawMesh ? clothMeshPipeline : clothPipeline);
+    wgpuRenderPassEncoderSetPipeline(renderPass, simOpts.drawMesh ? clothMeshPipeline : clothPipeline);
     wgpuRenderPassEncoderSetBindGroup(renderPass, 0, pipelineBindGroup, 0, NULL);
     wgpuRenderPassEncoderSetVertexBuffer(renderPass, 0, vertexBuffer, 0, wgpuBufferGetSize(vertexBuffer));
     wgpuRenderPassEncoderSetIndexBuffer(renderPass, indexBuffer, WGPUIndexFormat_Uint32, 0, wgpuBufferGetSize(indexBuffer));
@@ -363,14 +444,26 @@ void render(const AppState *app, float dt) {
     wgpuRenderPassEncoderDrawIndexed(renderPass, gridSize * gridSize * 6, 1, 0, 0, 0);
 
     igBegin("Cloth Simulation", NULL, 0);
-    if (!opts.simulate) {
+    if (!simOpts.simulate) {
         igText("Enable Simulate to start simulation");
+    } else {
+        igText("Simulation enabled");
     }
-    igCheckbox("Simulate", &opts.simulate);
-    igCheckbox("Show mesh", &opts.drawMesh);
+    igCheckbox("Simulate", &simOpts.simulate);
+    igCheckbox("Show mesh", &simOpts.drawMesh);
+    igSpacing();
+    igSliderInt("Num substeps", &simOpts.numSubsteps, 1, 10, "%d", 0);
+    igSliderInt("Solver iterations", &simOpts.solverIterations, 1, 10, "%d", 0);
+    igSpacing();
     bool updateParticles = false;
-    updateParticles |= igSliderInt("Cloth N", &opts.numParticles, 10, 200, "%d", 0);
-    updateParticles |= igSliderFloat("Cloth size", &opts.meshSize, 10.0f, 200.0f, "%.2f", 0);
+    updateParticles |= igSliderInt("Cloth N", &simOpts.numParticles, 10, 200, "%d", 0);
+    updateParticles |= igSliderFloat("Cloth size", &simOpts.meshSize, 10.0f, 200.0f, "%.2f", 0);
+    updateParticles |= igSliderFloat("Particle mass", &simOpts.particleMass, 0.1f, 10.0f, "%.2f", 0);
+    igSpacing();
+
+    igText("====== Stats ======");
+    igText("dt: %.2f", dt);
+
     igEnd();
 
 
@@ -392,8 +485,8 @@ void render(const AppState *app, float dt) {
     wgpuCommandEncoderRelease(encoder);
 
     if (updateParticles) {
-        initParticles(app, opts.numParticles, opts.meshSize / opts.numParticles);
-        opts.simulate = false;
+        initParticles(app);
+        simOpts.simulate = false;
     }
 }
 
