@@ -435,15 +435,87 @@ void render(const AppState *app, float dt) {
     for (int32_t i = 0; i < numParticles; i++) {
         ParticleVertex vertex;
         glm_vec3_copy(particles[i].position, vertex.position);
+        float restDistance = simOpts.meshSize / particleWidth;
         if (simOpts.visualizeStrain) {
+            int x = i % particleWidth;
+            int y = i / particleWidth;
+
+            int n = 0;
+            float strainSum = 0.0f;
+            vec3 tmp;
+
+            if (x + 1 < particleWidth) {
+                int rightIdx = i + 1;
+                glm_vec3_sub(particles[i].position, particles[rightIdx].position, tmp);
+                float actualDist = glm_vec3_norm(tmp);
+                float restDist = restDistance;
+                float strain = fabsf(actualDist - restDist) / restDist;
+                strainSum += strain;
+                n++;
+            }
+
+            if (x > 0) {
+                int leftIdx = i - 1;
+                glm_vec3_sub(particles[i].position, particles[leftIdx].position, tmp);
+                float actualDist = glm_vec3_norm(tmp);
+                float restDist = restDistance;
+                float strain = fabsf(actualDist - restDist) / restDist;
+                strainSum += strain;
+                n++;
+            }
+
+            if (y + 1 < particleWidth) {
+                int bottomIdx = i + particleWidth;
+                glm_vec3_sub(particles[i].position, particles[bottomIdx].position, tmp);
+                float actualDist = glm_vec3_norm(tmp);
+                float restDist = restDistance;
+                float strain = fabsf(actualDist - restDist) / restDist;
+                strainSum += strain;
+                n++;
+            }
+
+            if (y > 0) {
+                int topIdx = i - particleWidth;
+                glm_vec3_sub(particles[i].position, particles[topIdx].position, tmp);
+                float actualDist = glm_vec3_norm(tmp);
+                float restDist = restDistance;
+                float strain = fabsf(actualDist - restDist) / restDist;
+                strainSum += strain;
+                n++;
+            }
+            float avgStrain = (n > 0) ? strainSum / n : 0.0f;
+
+            // Map strain to a color
+            // Using a heat map: blue (low strain) -> green -> yellow -> red (high strain)
+            if (avgStrain < 0.25f) {
+                // Blue to green (0-0.25)
+                float t = avgStrain / 0.25f;
+                vertex.color[0] = 0.0f;                // R: 0 -> 0
+                vertex.color[1] = t;                   // G: 0 -> 1
+                vertex.color[2] = 1.0f - 0.5f * t;     // B: 1.0 -> 0.5
+            } else if (avgStrain < 0.5f) {
+                // Green to yellow (0.25-0.5)
+                float t = (avgStrain - 0.25f) / 0.25f;
+                vertex.color[0] = t;                   // R: 0 -> 1
+                vertex.color[1] = 1.0f;                // G: 1 -> 1
+                vertex.color[2] = 0.5f - 0.5f * t;     // B: 0.5 -> 0
+            } else {
+                // Yellow to red (0.5-1.0+)
+                float t = fminf((avgStrain - 0.5f) / 0.5f, 1.0f);
+                vertex.color[0] = 1.0f;                // R: 1 -> 1
+                vertex.color[1] = 1.0f - t;            // G: 1 -> 0
+                vertex.color[2] = 0.0f;                // B: 0 -> 0
+            }
+
+            vertex.color[3] = 1.0f;
 
         } else {
             const vec3 darkColor = {0.3f, 0.3f, 0.4f};  // Dark blue-gray
             const vec3 lightColor = {0.7f, 0.5f, 1.0f};  // Light blue-gray
 
             float height = particles[i].position[2] / simOpts.meshSize;
-            if (height > 1.0) height = 1.0;
-            else if (height < 0.0) height = 0.0;
+            if (height > 1.0) height = 1.0f;
+            else if (height < 0.0) height = 0.0f;
 
 
             vertex.color[0] = darkColor[0] + height * (lightColor[0] - darkColor[0]);
