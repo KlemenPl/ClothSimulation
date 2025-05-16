@@ -35,6 +35,7 @@ typedef struct Uniform {
 struct {
     bool drawMesh;
     bool simulate;
+    bool visualizeStrain;
     int32_t numParticles;
     float meshSize;
     float particleMass;
@@ -45,6 +46,7 @@ struct {
 } simOpts = {
     .drawMesh = false,
     .simulate = false,
+    .visualizeStrain = false,
     .numParticles = 100,
     .meshSize = 50.0f,
     .particleMass = 1.0f,
@@ -326,9 +328,6 @@ void simulateCloth(float dt) {
     for (int32_t substep = 0; substep < simOpts.numSubsteps; substep++) {
         for (int32_t i = 0; i < numParticles; i++) {
             glm_vec3_copy(particles[i].position, particles[i].prevPosition);
-        }
-
-        for (int32_t i = 0; i < numParticles; i++) {
             if (particles[i].isFixed) continue;
             glm_vec3_muladds(gravity, subDt, particles[i].velocity);
             glm_vec3_muladds(particles[i].velocity, subDt, particles[i].position);
@@ -436,10 +435,22 @@ void render(const AppState *app, float dt) {
     for (int32_t i = 0; i < numParticles; i++) {
         ParticleVertex vertex;
         glm_vec3_copy(particles[i].position, vertex.position);
-        vertex.color[0] = 1;
-        vertex.color[1] = 1;
-        vertex.color[2] = 1;
-        vertex.color[3] = 1;
+        if (simOpts.visualizeStrain) {
+
+        } else {
+            const vec3 darkColor = {0.3f, 0.3f, 0.4f};  // Dark blue-gray
+            const vec3 lightColor = {0.7f, 0.5f, 1.0f};  // Light blue-gray
+
+            float height = particles[i].position[2] / simOpts.meshSize;
+            if (height > 1.0) height = 1.0;
+            else if (height < 0.0) height = 0.0;
+
+
+            vertex.color[0] = darkColor[0] + height * (lightColor[0] - darkColor[0]);
+            vertex.color[1] = darkColor[1] + height * (lightColor[1] - darkColor[1]);
+            vertex.color[2] = darkColor[2] + height * (lightColor[2] - darkColor[2]);
+            vertex.color[3] = 1.0f;  // Full opacity
+        }
         vertices[i] = vertex;
     }
     wgpuQueueWriteBuffer(queue, vertexBuffer, 0, vertices, numParticles * sizeof(*vertices));
@@ -454,6 +465,7 @@ void render(const AppState *app, float dt) {
     }
     igCheckbox("Simulate", &simOpts.simulate);
     igCheckbox("Show mesh", &simOpts.drawMesh);
+    igCheckbox("Visualize strain", &simOpts.visualizeStrain);
     igSpacing();
     igSliderInt("Num substeps", &simOpts.numSubsteps, 1, 10, "%d", 0);
     igSliderInt("Solver iterations", &simOpts.solverIterations, 1, 10, "%d", 0);
