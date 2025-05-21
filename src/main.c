@@ -387,6 +387,100 @@ void simulateCloth(float dt) {
     }
 }
 
+int32_t selectedParticle = -1;
+vec3 rayOrigin;
+vec3 rayDirection;
+vec3 dragPlaneNormal;
+vec3 dragPlanePoint;
+float dragDepth;
+
+void castRayFromCamera(const Camera *camera, float screenX, float screenY, vec3 origin, vec3 direction) {
+    // convert to NDC
+    float ndcX = (2.0f * screenX) - 1.0f;
+    float ndcY = 1.0f - (2.0f * screenY);
+
+    vec4 clipPos = {ndcX, ndcY, -1.0f, 1.0f};
+
+    // View space
+    vec4 viewPos;
+    mat4 invProj;
+    glm_mat4_inv(camera->proj, invProj);
+    glm_mat4_mulv(invProj, clipPos, viewPos);
+    viewPos[2] = -1.0f;
+    viewPos[3] = 0.0f;
+
+    // World Space
+    vec4 worldPos;
+    mat4 invView;
+    glm_mat4_inv(camera->view, invView);
+    glm_mat4_mulv(invView, viewPos, worldPos);
+
+    glm_vec3_copy(camera->position, origin);
+    glm_vec3_copy((vec3){worldPos[0], worldPos[1], worldPos[2]}, direction);
+    glm_vec3_normalize(direction);
+}
+
+bool rayIntersectsParticle(const vec3 origin, const vec3 direction, const vec3 particlePos, float radius, float *t) {
+    vec3 oc;
+    glm_vec3_sub(origin, particlePos, oc);
+
+    float a = glm_vec3_dot(direction, direction);
+    float b = 2.0f * glm_vec3_dot(oc, direction);
+    float c = glm_vec3_dot(oc, oc) - radius * radius;
+    float discriminant = b * b - 4 * a * c;
+
+    if (discriminant < 0) {
+        return false;
+    } else {
+        *t = (-b - sqrtf(discriminant)) / (2.0f * a);
+        return *t > 0;
+    }
+}
+
+int32_t findIntersectedParticle(const vec3 origin, const vec3 direction, float *closestT) {
+    int32_t closest = -1;
+    *closestT = FLT_MAX;
+
+    float particleRadius = 0.5f;
+
+    for (int32_t i = 0; i < numParticles; i++) {
+        if (particles[i].isFixed) continue;
+
+        float t;
+        if (rayIntersectsParticle(origin, direction, particles[i].position, particleRadius, &t)) {
+            if (t < *closestT) {
+                *closestT = t;
+                closest = i;
+            }
+        }
+    }
+
+    return closest;
+}
+
+bool rayPlaneIntersection(vec3 rayOrigin, vec3 rayDir, vec3 planePoint, vec3 planeNormal, float *t, vec3 intersection) {
+    float denom = glm_vec3_dot(planeNormal, rayDir);
+
+    if (fabsf(denom) < 1e-6) {
+        return false;
+    }
+
+    vec3 p0l0;
+    glm_vec3_sub(planePoint, rayOrigin, p0l0);
+    *t = glm_vec3_dot(p0l0, planeNormal) / denom;
+
+    if (*t < 0) {
+        return false;  // Intersection is behind the ray origin
+    }
+
+    vec3 scaled_dir;
+    glm_vec3_scale(rayDir, *t, scaled_dir);
+    glm_vec3_add(rayOrigin, scaled_dir, intersection);
+
+    return true;
+}
+
+
 void render(const AppState *app, float dt) {
     static bool updateParticles = false;
     if (updateParticles) {
@@ -431,6 +525,60 @@ void render(const AppState *app, float dt) {
 
         if (inputIsButtonDown(GLFW_MOUSE_BUTTON_LEFT)) {
             cameraRotate(&camera, -mouseDelta[0], mouseDelta[1], true);
+        }
+    }
+
+    if (selectedParticle != -1) {
+        particles[selectedParticle].isFixed = false;
+    }
+    if (!capturedMouse && inputIsButtonPressed(GLFW_MOUSE_BUTTON_RIGHT)) {
+        vec2 mouse;
+        inputGetMousePos(mouse);
+        int width, height;
+        glfwGetWindowSize(app->window, &width, &height);
+
+        float normX = mouse[0] / width;
+        float normY = mouse[1] / height;
+
+        castRayFromCamera(&camera, normX, normY, rayOrigin, rayDirection);
+        float t;
+        selectedParticle = findIntersectedParticle(rayOrigin, rayDirection, &t);
+        if (selectedParticle != -1) {
+            vec3 hitPoint;
+            glm_vec3_scale(rayDirection, t, hitPoint);
+            glm_vec3_add(rayOrigin, hitPoint, dragPlanePoint);
+
+            glm_vec3_copy(camera.front, dragPlaneNormal);
+            glm_vec3_negate(dragPlaneNormal);
+
+            dragDepth = t;
+            glm_vec3_copy(particles[selectedParticle].position, particles[selectedParticle].prevPosition);
+        }
+    }
+    if (!capturedMouse && inputIsButtonReleased(GLFW_MOUSE_BUTTON_RIGHT)) {
+        selectedParticle = -1;
+    }
+
+    if (selectedParticle != -1) {
+        vec2 mouse;
+        inputGetMousePos(mouse);
+        int width, height;
+        glfwGetWindowSize(app->window, &width, &height);
+
+        float normX = mouse[0] / width;
+        float normY = mouse[1] / height;
+
+        vec3 currentRayOrigin, currentRayDir;
+        castRayFromCamera(&camera, normX, normY, currentRayOrigin, currentRayDir);
+
+        vec3 intersection;
+        float t;
+        if (rayPlaneIntersection(currentRayOrigin, currentRayDir, dragPlanePoint, dragPlaneNormal, &t, intersection)) {
+            glm_vec3_copy(intersection, particles[selectedParticle].position);
+
+            vec3 delta;
+            glm_vec3_sub(intersection, particles[selectedParticle].prevPosition, delta);
+            glm_vec3_divs(delta, dt, particles[selectedParticle].velocity);
         }
     }
 

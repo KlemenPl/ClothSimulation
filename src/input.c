@@ -73,9 +73,9 @@ bool inputIsButtonDown(int button) {
     return input.curr.btns[button];
 }
 bool inputIsButtonPressed(int button) {
-    return !input.curr.btns[button] && input.curr.btns[button];
+    return !input.prev.btns[button] && input.curr.btns[button];
 }
 bool inputIsButtonReleased(int button) {
-    return input.curr.btns[button] && !input.curr.btns[button];
+    return input.prev.btns[button] && !input.curr.btns[button];
 }
 
