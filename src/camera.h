@@ -26,7 +26,7 @@ typedef struct Camera {
 } Camera;
 
 static const Camera CAMERA_DEFAULT = {
-    .position = {0.0f, 0.0f, 0.0f},
+    .position = {-50.0f, 5.0f, 10.0f},
     .front = {0.0f, 0.0f, -1.0f},
     .up = {0.0f, 1.0f, 0.0f},
     .right = {1.0f, 0.0f, 0.0f},

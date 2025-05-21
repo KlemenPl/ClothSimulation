@@ -40,17 +40,19 @@ struct {
     float meshSize;
     float particleMass;
 
+    float dampingFactor;
     int32_t numSubsteps;
     int32_t solverIterations;
 
 } simOpts = {
     .drawMesh = false,
     .simulate = false,
-    .visualizeStrain = false,
+    .visualizeStrain = true,
     .numParticles = 100,
     .meshSize = 50.0f,
     .particleMass = 1.0f,
-    .numSubsteps = 3,
+    .dampingFactor = 0.995f,
+    .numSubsteps = 1,
     .solverIterations = 3,
 };
 
@@ -78,9 +80,10 @@ void initParticles(const AppState *app) {
     gridSize = n;
     numParticles = (gridSize + 1) * (gridSize + 1);
     particleWidth = gridSize + 1;
-    numConstraints = numParticles * 4;
+    numConstraints = numParticles * 6;
 
     int32_t constraintIdx = 0;
+    float hSpacing = sqrtf(spacing * spacing + spacing * spacing);
 
     for (int32_t y = 0; y < particleWidth; y++) {
         for (int32_t x = 0; x < particleWidth; x++) {
@@ -122,9 +125,26 @@ void initParticles(const AppState *app) {
                 };
             }
 
+            // Horizontal
+            if (x > 0 && y > 0) {
+                constraints[constraintIdx++] = (DistanceConstraint) {
+                    .p1 = idx,
+                    .p2 = idx - particleWidth - 1,
+                    .restLength = hSpacing,
+                };
+            }
+            if (x < particleWidth - 1 && y < particleWidth - 1) {
+                constraints[constraintIdx++] = (DistanceConstraint) {
+                    .p1 = idx,
+                    .p2 = idx + particleWidth + 1,
+                    .restLength = hSpacing,
+                };
+            }
+
 
         }
     }
+    numConstraints = constraintIdx;
     int32_t lastRow = (gridSize - 1) * particleWidth;
     particles[lastRow].isFixed = true;
     particles[lastRow + particleWidth - 1].isFixed = true;
@@ -252,7 +272,7 @@ int init(const AppState *app, int argc, const char **argv) {
 
     int32_t maxParticles = MAX_N * MAX_N;
     particles = malloc(sizeof(*particles) * maxParticles);
-    constraints = malloc(sizeof(*constraints) * maxParticles * 4);
+    constraints = malloc(sizeof(*constraints) * maxParticles * 6);
     vertexBuffer = wgpuDeviceCreateBuffer(app->device, &(WGPUBufferDescriptor){
         .label = "Vertex Buffer",
         .usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Vertex,
@@ -288,6 +308,28 @@ void deinit(const AppState *app) {
     free(constraints);
 }
 
+void integrateParticles(float dt) {
+    static vec3 gravity = {0.0f, -9.81f, 0.0f};
+    for (int32_t i = 0; i < numParticles; i++) {
+        if (particles[i].isFixed) continue;
+        glm_vec3_copy(particles[i].position, particles[i].prevPosition);
+
+        vec3 force;
+        glm_vec3_scale(gravity, particles[i].mass, force);
+
+        vec3 acceleration;
+        glm_vec3_scale(force, particles[i].invMass, acceleration);
+
+        vec3 velocityChange;
+        glm_vec3_scale(acceleration, dt, velocityChange);
+        glm_vec3_add(particles[i].velocity, velocityChange, particles[i].velocity);
+
+        vec3 positionChange;
+        glm_vec3_scale(particles[i].velocity, dt, positionChange);
+        glm_vec3_add(particles[i].position, positionChange, particles[i].position);
+    }
+}
+
 void solveDistanceConstraint(int32_t cIdx) {
     DistanceConstraint *constraint = constraints + cIdx;
 
@@ -320,18 +362,12 @@ void solveDistanceConstraint(int32_t cIdx) {
         glm_vec3_muladds(direction, (w2 * correction), p2->position);
     }
 }
+
 void simulateCloth(float dt) {
     float subDt = dt / simOpts.numSubsteps;
 
-    static vec3 gravity = {0.0f, -9.81f, 0.0f};
-
     for (int32_t substep = 0; substep < simOpts.numSubsteps; substep++) {
-        for (int32_t i = 0; i < numParticles; i++) {
-            glm_vec3_copy(particles[i].position, particles[i].prevPosition);
-            if (particles[i].isFixed) continue;
-            glm_vec3_muladds(gravity, subDt, particles[i].velocity);
-            glm_vec3_muladds(particles[i].velocity, subDt, particles[i].position);
-        }
+        integrateParticles(subDt);
 
         for (int32_t iter = 0; iter < simOpts.solverIterations; iter++) {
             for (int32_t i = 0; i < numConstraints; i++) {
@@ -341,12 +377,14 @@ void simulateCloth(float dt) {
 
         for (int32_t i = 0; i < numParticles; i++) {
             if (particles[i].isFixed) continue;
+
             glm_vec3_sub(particles[i].position, particles[i].prevPosition, particles[i].velocity);
             glm_vec3_divs(particles[i].velocity, subDt, particles[i].velocity);
+
+            float dampingFactor = simOpts.dampingFactor;
+            glm_vec3_scale(particles[i].velocity, dampingFactor, particles[i].velocity);
         }
-
     }
-
 }
 
 void render(const AppState *app, float dt) {
@@ -530,6 +568,8 @@ void render(const AppState *app, float dt) {
     wgpuRenderPassEncoderDrawIndexed(renderPass, gridSize * gridSize * 6, 1, 0, 0, 0);
 
     igBegin("Cloth Simulation", NULL, 0);
+    igText("Use right click to interact.");
+    igSpacing();
     if (!simOpts.simulate) {
         igText("Enable Simulate to start simulation");
     } else {
@@ -541,6 +581,7 @@ void render(const AppState *app, float dt) {
     igSpacing();
     igSliderInt("Num substeps", &simOpts.numSubsteps, 1, 10, "%d", 0);
     igSliderInt("Solver iterations", &simOpts.solverIterations, 1, 10, "%d", 0);
+    igSliderFloat("Damping factor", &simOpts.dampingFactor, 0.9f, 1.0f, "%.3f", 0);
     igSpacing();
     updateParticles |= igSliderInt("Cloth N", &simOpts.numParticles, 10, MAX_N, "%d", 0);
     updateParticles |= igSliderFloat("Cloth size", &simOpts.meshSize, 10.0f, 200.0f, "%.2f", 0);
@@ -548,7 +589,7 @@ void render(const AppState *app, float dt) {
     igSpacing();
 
     igText("====== Stats ======");
-    igText("dt: %.2f", dt);
+    igText("Time: %.2f ms", 1 / dt / 1000.0f);
 
     igEnd();
 
