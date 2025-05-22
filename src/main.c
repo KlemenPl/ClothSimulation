@@ -76,10 +76,10 @@ uint32_t *indices;
 
 void initParticles(const AppState *app) {
     int32_t n = simOpts.numParticles;
-    float spacing = (float) simOpts.meshSize / (n - 1.0f);
     gridSize = n;
     numParticles = (gridSize + 1) * (gridSize + 1);
     particleWidth = gridSize + 1;
+    float spacing = (float) simOpts.meshSize / (gridSize);
     numConstraints = numParticles * 6;
 
     int32_t constraintIdx = 0;
@@ -342,7 +342,7 @@ void solveDistanceConstraint(int32_t cIdx) {
     vec3 delta;
     glm_vec3_sub(p1->position, p2->position, delta);
     float length = glm_vec3_norm(delta);
-    if (length < 1e-5) return;
+    if (length < 1e-3) return;
 
     float C = length - constraint->restLength;
     vec3 direction;
@@ -731,13 +731,10 @@ void render(const AppState *app, float dt) {
     igSliderInt("Solver iterations", &simOpts.solverIterations, 1, 10, "%d", 0);
     igSliderFloat("Damping factor", &simOpts.dampingFactor, 0.9f, 1.0f, "%.3f", 0);
     igSpacing();
-    updateParticles |= igSliderInt("Cloth N", &simOpts.numParticles, 10, MAX_N, "%d", 0);
+    //updateParticles |= igSliderInt("Cloth N", &simOpts.numParticles, 10, MAX_N, "%d", 0);
     updateParticles |= igSliderFloat("Cloth size", &simOpts.meshSize, 10.0f, 200.0f, "%.2f", 0);
     updateParticles |= igSliderFloat("Particle mass", &simOpts.particleMass, 0.1f, 10.0f, "%.2f", 0);
     igSpacing();
-
-    igText("====== Stats ======");
-    igText("Time: %.2f ms", 1 / dt / 1000.0f);
 
     igEnd();
 
