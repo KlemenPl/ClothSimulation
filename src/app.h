@@ -80,12 +80,16 @@ static void _wgpuOnDeviceError(WGPUErrorType type, const char *message, void *us
 
 
 static bool _initWebGPU(AppState *state) {
+#ifdef __EMSCRIPTEN__
+    state->instance = wgpuCreateInstance(NULL);
+#else
     state->instance = wgpuCreateInstance(&(WGPUInstanceDescriptor) {
         .nextInChain = (WGPUChainedStruct *) &(WGPUInstanceExtras) {
             .chain.sType = WGPUSType_InstanceExtras,
             .backends = WGPUInstanceBackend_All,
         },
     });
+#endif
     if (state->instance == NULL) {
         fprintf(stderr, "Failed to create WebGPU instance\n");
         return false;
